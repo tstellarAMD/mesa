@@ -835,33 +835,79 @@ static void build_tbuffer_store(struct si_shader_context *ctx,
 				unsigned tfe)
 {
 	struct gallivm_state *gallivm = &ctx->gallivm;
-	LLVMValueRef args[] = {
-		rsrc,
-		vdata,
-		LLVMConstInt(ctx->i32, num_channels, 0),
-		vaddr,
-		soffset,
-		LLVMConstInt(ctx->i32, inst_offset, 0),
-		LLVMConstInt(ctx->i32, dfmt, 0),
-		LLVMConstInt(ctx->i32, nfmt, 0),
-		LLVMConstInt(ctx->i32, offen, 0),
-		LLVMConstInt(ctx->i32, idxen, 0),
-		LLVMConstInt(ctx->i32, glc, 0),
-		LLVMConstInt(ctx->i32, slc, 0),
-		LLVMConstInt(ctx->i32, tfe, 0)
-	};
+	/* The intrinsic is overloaded, we need to add a type suffix for overloading to work. */
+	unsigned func = CLAMP(num_channels, 1, 3) - 1;
+	const char *type_names[] = {"i32", "v2i32", "v4i32"};
+	LLVMTypeRef types[] = {ctx->i32, LLVMVectorType(ctx->i32, 2),
+			       ctx->v4i32};
+	LLVMTypeRef rsrc_type = LLVMTypeOf(rsrc);
+	LLVMTypeKind rsrc_kind = LLVMGetTypeKind(rsrc_type);
+	unsigned as;
+	LLVMTypeRef ptr_type;
+
+	char name[256];
+	LLVMValueRef voffset = LLVMConstInt(ctx->i32, 0, 0);
+	LLVMValueRef vindex = LLVMConstInt(ctx->i32, 0, 0);
+	LLVMValueRef offset;
+	LLVMValueRef args[13];
 
 	/* The instruction offset field has 12 bits */
 	assert(offen || inst_offset < (1 << 12));
 
-	/* The intrinsic is overloaded, we need to add a type suffix for overloading to work. */
-	unsigned func = CLAMP(num_channels, 1, 3) - 1;
-	const char *types[] = {"i32", "v2i32", "v4i32"};
-	char name[256];
-	snprintf(name, sizeof(name), "llvm.SI.tbuffer.store.%s", types[func]);
+	if (rsrc_kind != LLVMPointerTypeKind) {
+		args[0] = rsrc;
+		args[1] = vdata;
+		args[2] = LLVMConstInt(ctx->i32, num_channels, 0);
+		args[3] = vaddr;
+		args[4] = soffset;
+		args[5] = LLVMConstInt(ctx->i32, inst_offset, 0);
+		args[6] = LLVMConstInt(ctx->i32, dfmt, 0);
+		args[7] = LLVMConstInt(ctx->i32, nfmt, 0);
+		args[8] = LLVMConstInt(ctx->i32, offen, 0);
+		args[9] = LLVMConstInt(ctx->i32, idxen, 0);
+		args[10] = LLVMConstInt(ctx->i32, glc, 0);
+		args[11] = LLVMConstInt(ctx->i32, slc, 0);
+		args[12] = LLVMConstInt(ctx->i32, tfe, 0);
 
-	lp_build_intrinsic(gallivm->builder, name, ctx->voidt,
-			   args, ARRAY_SIZE(args), 0);
+		snprintf(name, sizeof(name), "llvm.SI.tbuffer.store.%s",
+			 type_names[func]);
+
+		lp_build_intrinsic(gallivm->builder, name, ctx->voidt,
+				   args, 13, 0);
+		return;
+	}
+
+	as = LLVMGetPointerAddressSpace(rsrc_type);
+	ptr_type = LLVMPointerType(types[func], as);
+
+	if (offen && idxen) {
+		voffset = LLVMBuildExtractElement(gallivm->builder, vaddr,
+					LLVMConstInt(ctx->i32, 0, 0), "");
+		vindex = LLVMBuildExtractElement(gallivm->builder, vaddr,
+					LLVMConstInt(ctx->i32, 1, 0), "");
+	} else if (offen) {
+		voffset = vaddr;
+	} else if (idxen) {
+		vindex = vaddr;
+	}
+
+	offset = LLVMConstInt(ctx->i32, inst_offset, 0);
+	offset = LLVMBuildAdd(gallivm->builder, voffset, offset, "");
+
+	args[0] = vdata;
+	args[1] = LLVMBuildBitCast(gallivm->builder, rsrc, ptr_type, "");
+	args[2] = vindex;
+	args[3] = offset;
+	args[4] = soffset;
+	args[5] = LLVMConstInt(ctx->i32, dfmt, 0);
+	args[6] = LLVMConstInt(ctx->i32, nfmt, 0);
+	args[7] = LLVMConstInt(ctx->i1, glc, 0);
+	args[8] = LLVMConstInt(ctx->i1, slc, 0);
+
+	snprintf(name, sizeof(name), "llvm.amdgcn.tbuffer.store.format.%s",
+		 type_names[func]);
+
+	lp_build_intrinsic(gallivm->builder, name, ctx->voidt, args, 9, 0);
 }
 
 static void build_tbuffer_store_dwords(struct si_shader_context *ctx,
