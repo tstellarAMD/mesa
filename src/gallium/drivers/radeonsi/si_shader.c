@@ -943,36 +943,56 @@ static LLVMValueRef build_buffer_load(struct si_shader_context *ctx,
 {
 	struct gallivm_state *gallivm = &ctx->gallivm;
 	unsigned func = CLAMP(num_channels, 1, 3) - 1;
+	LLVMTypeRef rsrc_type = LLVMTypeOf(rsrc);
+	LLVMTypeKind rsrc_kind = LLVMGetTypeKind(rsrc_type);
+	LLVMTypeRef ftypes[] = {ctx->f32, LLVMVectorType(ctx->f32, 2),
+				ctx->v4f32};
+	const char *ftype_names[] = {"f32", "v2f32", "v4f32"};
+	LLVMTypeRef ftype = ftypes[func];
+	const char *ftype_name = ftype_names[func];	
+	char name[256];
+	LLVMValueRef offset = LLVMConstInt(ctx->i32, inst_offset, 0);
+	if (voffset)
+		offset = LLVMBuildAdd(gallivm->builder, voffset, offset, "");
 
-	if (!soffset && HAVE_LLVM >= 0x309) {
+	if (rsrc_kind == LLVMPointerTypeKind) {
+		unsigned as = LLVMGetPointerAddressSpace(rsrc_type);
+		LLVMTypeRef ptr_type = LLVMPointerType(ftype, as);
+
+		LLVMValueRef args[] = {
+			LLVMBuildBitCast(gallivm->builder, rsrc, ptr_type, ""),
+			vindex ? vindex : LLVMConstInt(ctx->i32, 0, 0),
+			offset,
+			soffset ? soffset : LLVMConstInt(ctx->i32, 0, 0),
+			LLVMConstInt(ctx->i1, glc, 0),
+			LLVMConstInt(ctx->i1, slc, 0)
+		};
+		snprintf(name, sizeof(name), "llvm.amdgcn.buffer.load.ptr.%s",
+			 ftype_name);
+		return lp_build_intrinsic(gallivm->builder, name, ftype, args,
+		                          ARRAY_SIZE(args),
+					  LP_FUNC_ATTR_READONLY |
+					  LP_FUNC_ATTR_ARGMEMONLY);
+	} else if (!soffset && HAVE_LLVM >= 0x309) {
 		LLVMValueRef args[] = {
 			LLVMBuildBitCast(gallivm->builder, rsrc, ctx->v4i32, ""),
 			vindex ? vindex : LLVMConstInt(ctx->i32, 0, 0),
-			LLVMConstInt(ctx->i32, inst_offset, 0),
+			offset,
 			LLVMConstInt(ctx->i1, glc, 0),
 			LLVMConstInt(ctx->i1, slc, 0)
 		};
 
-		LLVMTypeRef types[] = {ctx->f32, LLVMVectorType(ctx->f32, 2),
-		                       ctx->v4f32};
-		const char *type_names[] = {"f32", "v2f32", "v4f32"};
-		char name[256];
-
-		if (voffset) {
-			args[2] = LLVMBuildAdd(gallivm->builder, args[2], voffset,
-			                       "");
-		}
-
 		snprintf(name, sizeof(name), "llvm.amdgcn.buffer.load.%s",
-		         type_names[func]);
-
-		return lp_build_intrinsic(gallivm->builder, name, types[func], args,
-		                          ARRAY_SIZE(args), LP_FUNC_ATTR_READONLY);
+			 ftype_name);
+	
+		return lp_build_intrinsic(gallivm->builder, name, ftype, args,
+		                          ARRAY_SIZE(args),
+					  LP_FUNC_ATTR_READONLY);
 	} else {
 		LLVMValueRef args[] = {
 			LLVMBuildBitCast(gallivm->builder, rsrc, ctx->v16i8, ""),
 			voffset ? voffset : vindex,
-			soffset,
+			soffset ? soffset : LLVMConstInt(ctx->i32, 0, 0),
 			LLVMConstInt(ctx->i32, inst_offset, 0),
 			LLVMConstInt(ctx->i32, voffset ? 1 : 0, 0), // offen
 			LLVMConstInt(ctx->i32, vindex ? 1 : 0, 0), //idxen
