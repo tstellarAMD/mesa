@@ -1365,8 +1365,11 @@ void si_llvm_context_init(struct si_shader_context *ctx,
 	ctx->v4f32 = LLVMVectorType(ctx->f32, 4);
 	ctx->v8i32 = LLVMVectorType(ctx->i32, 8);
 	ctx->const_buffer_rsrc_type = ctx->v16i8;
+	ctx->rw_buffers_rsrc_type = ctx->v16i8;
 
 	if (HAVE_LLVM >= 0x0500) {
+		ctx->rw_buffers_rsrc_type =
+			LLVMPointerType(ctx->i32, GLOBAL_ADDR_SPACE_W_RSRC);
 		ctx->const_buffer_rsrc_type =
 			LLVMPointerType(ctx->i32, CONST_ADDR_SPACE_W_RSRC);
 	}

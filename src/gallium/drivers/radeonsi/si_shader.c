@@ -5708,7 +5708,7 @@ static void create_function(struct si_shader_context *ctx)
 
 	v3i32 = LLVMVectorType(ctx->i32, 3);
 
-	params[SI_PARAM_RW_BUFFERS] = const_array(ctx->v16i8, SI_NUM_RW_BUFFERS);
+	params[SI_PARAM_RW_BUFFERS] = const_array(ctx->rw_buffers_rsrc_type, SI_NUM_RW_BUFFERS);
 	params[SI_PARAM_CONST_BUFFERS] = const_array(ctx->const_buffer_rsrc_type, SI_NUM_CONST_BUFFERS);
 	params[SI_PARAM_SAMPLERS] = const_array(ctx->v8i32, SI_NUM_SAMPLERS);
 	params[SI_PARAM_IMAGES] = const_array(ctx->v8i32, SI_NUM_IMAGES);
@@ -6023,6 +6023,14 @@ static void preload_ring_buffers(struct si_shader_context *ctx)
 			assert(stride < (1 << 14));
 
 			num_records = 64;
+
+			LLVMTypeRef ring_type = LLVMTypeOf(base_ring);
+			LLVMTypeKind ring_kind = LLVMGetTypeKind(ring_type);
+			if (ring_kind == LLVMPointerTypeKind) {
+				base_ring = LLVMBuildPtrToInt(builder,
+							      base_ring,
+							      ctx->i128, "");
+			}
 
 			ring = LLVMBuildBitCast(builder, base_ring, v2i64, "");
 			tmp = LLVMBuildExtractElement(builder, ring, uint->zero, "");
@@ -8113,7 +8121,7 @@ static void si_build_tcs_epilog_function(struct si_shader_context *ctx,
 	int last_sgpr, num_params;
 
 	/* Declare inputs. Only RW_BUFFERS and TESS_FACTOR_OFFSET are used. */
-	params[SI_PARAM_RW_BUFFERS] = const_array(ctx->v16i8, SI_NUM_RW_BUFFERS);
+	params[SI_PARAM_RW_BUFFERS] = const_array(ctx->rw_buffers_rsrc_type, SI_NUM_RW_BUFFERS);
 	params[SI_PARAM_CONST_BUFFERS] = ctx->i64;
 	params[SI_PARAM_SAMPLERS] = ctx->i64;
 	params[SI_PARAM_IMAGES] = ctx->i64;

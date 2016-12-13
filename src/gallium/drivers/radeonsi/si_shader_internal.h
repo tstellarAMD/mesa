@@ -151,6 +151,7 @@ struct si_shader_context {
 	LLVMTypeRef v4i32;
 	LLVMTypeRef v4f32;
 	LLVMTypeRef v8i32;
+	LLVMTypeRef rw_buffers_rsrc_type;
 	LLVMTypeRef const_buffer_rsrc_type;
 
 	LLVMValueRef shared_memory;
@@ -159,6 +160,7 @@ struct si_shader_context {
 enum {
 	CONST_ADDR_SPACE = 2,
 	LOCAL_ADDR_SPACE = 3,
+	GLOBAL_ADDR_SPACE_W_RSRC = 41,
 	CONST_ADDR_SPACE_W_RSRC = 42,
 };
 
