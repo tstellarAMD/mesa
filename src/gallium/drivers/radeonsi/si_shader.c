@@ -890,7 +890,7 @@ static LLVMValueRef build_buffer_load(struct si_shader_context *ctx,
 	struct gallivm_state *gallivm = &ctx->gallivm;
 	unsigned func = CLAMP(num_channels, 1, 3) - 1;
 
-	if (HAVE_LLVM >= 0x309) {
+	if (!soffset && HAVE_LLVM >= 0x309) {
 		LLVMValueRef args[] = {
 			LLVMBuildBitCast(gallivm->builder, rsrc, ctx->v4i32, ""),
 			vindex ? vindex : LLVMConstInt(ctx->i32, 0, 0),
@@ -906,11 +906,6 @@ static LLVMValueRef build_buffer_load(struct si_shader_context *ctx,
 
 		if (voffset) {
 			args[2] = LLVMBuildAdd(gallivm->builder, args[2], voffset,
-			                       "");
-		}
-
-		if (soffset) {
-			args[2] = LLVMBuildAdd(gallivm->builder, args[2], soffset,
 			                       "");
 		}
 
@@ -1185,13 +1180,12 @@ static LLVMValueRef fetch_input_gs(
 	struct lp_build_context *uint =	&ctx->bld_base.uint_bld;
 	struct gallivm_state *gallivm = base->gallivm;
 	LLVMValueRef vtx_offset;
-	LLVMValueRef args[9];
 	unsigned vtx_offset_param;
 	struct tgsi_shader_info *info = &shader->selector->info;
 	unsigned semantic_name = info->input_semantic_name[reg->Register.Index];
 	unsigned semantic_index = info->input_semantic_index[reg->Register.Index];
 	unsigned param;
-	LLVMValueRef value;
+	LLVMValueRef soffset, value;
 
 	if (swizzle != ~0 && semantic_name == TGSI_SEMANTIC_PRIMID)
 		return get_primitive_id(bld_base, swizzle);
@@ -1223,27 +1217,15 @@ static LLVMValueRef fetch_input_gs(
 				      4);
 
 	param = si_shader_io_get_unique_index(semantic_name, semantic_index);
-	args[0] = ctx->esgs_ring;
-	args[1] = vtx_offset;
-	args[2] = lp_build_const_int32(gallivm, (param * 4 + swizzle) * 256);
-	args[3] = uint->zero;
-	args[4] = uint->one;  /* OFFEN */
-	args[5] = uint->zero; /* IDXEN */
-	args[6] = uint->one;  /* GLC */
-	args[7] = uint->zero; /* SLC */
-	args[8] = uint->zero; /* TFE */
+	soffset = lp_build_const_int32(gallivm, (param * 4 + swizzle) * 256);
 
-	value = lp_build_intrinsic(gallivm->builder,
-				   "llvm.SI.buffer.load.dword.i32.i32",
-				   ctx->i32, args, 9,
-				   LP_FUNC_ATTR_READONLY);
+	value = build_buffer_load(ctx, ctx->esgs_ring, 1, NULL,
+				  vtx_offset, soffset, 0, 1, 0);
 	if (tgsi_type_is_64bit(type)) {
 		LLVMValueRef value2;
-		args[2] = lp_build_const_int32(gallivm, (param * 4 + swizzle + 1) * 256);
-		value2 = lp_build_intrinsic(gallivm->builder,
-					    "llvm.SI.buffer.load.dword.i32.i32",
-					    ctx->i32, args, 9,
-					    LP_FUNC_ATTR_READONLY);
+		soffset = lp_build_const_int32(gallivm, (param * 4 + swizzle + 1) * 256);
+		value2 = build_buffer_load(ctx, ctx->esgs_ring, 1, NULL,
+					   vtx_offset, soffset, 0, 1, 0);
 		return si_llvm_emit_fetch_64bit(bld_base, type,
 						value, value2);
 	}
@@ -6476,7 +6458,7 @@ si_generate_gs_copy_shader(struct si_screen *sscreen,
 	struct lp_build_context *uint = &bld_base->uint_bld;
 	struct si_shader_output_values *outputs;
 	struct tgsi_shader_info *gsinfo = &gs_selector->info;
-	LLVMValueRef args[9];
+	LLVMValueRef voffset;
 	int i, r;
 
 	outputs = MALLOC(gsinfo->num_outputs * sizeof(outputs[0]));
@@ -6503,18 +6485,6 @@ si_generate_gs_copy_shader(struct si_screen *sscreen,
 	create_function(&ctx);
 	preload_ring_buffers(&ctx);
 
-	args[0] = ctx.gsvs_ring[0];
-	args[1] = lp_build_mul_imm(uint,
-				   LLVMGetParam(ctx.main_fn,
-						ctx.param_vertex_id),
-				   4);
-	args[3] = uint->zero;
-	args[4] = uint->one;  /* OFFEN */
-	args[5] = uint->zero; /* IDXEN */
-	args[6] = uint->one;  /* GLC */
-	args[7] = uint->one;  /* SLC */
-	args[8] = uint->zero; /* TFE */
-
 	/* Fetch the vertex stream ID.*/
 	LLVMValueRef stream_id;
 
@@ -6524,6 +6494,9 @@ si_generate_gs_copy_shader(struct si_screen *sscreen,
 		stream_id = uint->zero;
 
 	/* Fill in output information. */
+	voffset = lp_build_mul_imm(uint, LLVMGetParam(ctx.main_fn,
+                                                      ctx.param_vertex_id), 4);
+	/* Fetch vertex data from GSVS ring */
 	for (i = 0; i < gsinfo->num_outputs; ++i) {
 		outputs[i].semantic_name = gsinfo->output_semantic_name[i];
 		outputs[i].semantic_index = gsinfo->output_semantic_index[i];
@@ -6558,24 +6531,24 @@ si_generate_gs_copy_shader(struct si_screen *sscreen,
 		offset = 0;
 		for (i = 0; i < gsinfo->num_outputs; ++i) {
 			for (unsigned chan = 0; chan < 4; chan++) {
+				LLVMValueRef load, soffset;
 				if (!(gsinfo->output_usagemask[i] & (1 << chan)) ||
 				    outputs[i].vertex_stream[chan] != stream) {
 					outputs[i].values[chan] = ctx.bld_base.base.undef;
 					continue;
 				}
 
-				args[2] = lp_build_const_int32(
-					gallivm,
+				soffset = lp_build_const_int32(gallivm,
 					offset * gs_selector->gs_max_out_vertices * 16 * 4);
 				offset++;
 
+				load = build_buffer_load(&ctx, ctx.gsvs_ring[0], 1,
+							 NULL, voffset, soffset,
+							 0, 1, 1);
+
 				outputs[i].values[chan] =
 					LLVMBuildBitCast(gallivm->builder,
-						 lp_build_intrinsic(gallivm->builder,
-								 "llvm.SI.buffer.load.dword.i32.i32",
-								 ctx.i32, args, 9,
-								 LP_FUNC_ATTR_READONLY),
-						 ctx.f32, "");
+							 load, ctx.f32, "");
 			}
 		}
 
