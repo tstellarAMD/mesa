@@ -355,15 +355,30 @@ static LLVMValueRef build_indexed_load_const(
 	struct si_shader_context *ctx,
 	LLVMValueRef base_ptr, LLVMValueRef index)
 {
+	struct gallivm_state *gallivm = ctx->soa.bld_base.base.gallivm;
 	LLVMTypeRef ptr_type = LLVMTypeOf(base_ptr);
+	unsigned ptr_as = LLVMGetPointerAddressSpace(ptr_type);
 	LLVMTypeRef elem_type = LLVMGetElementType(ptr_type);
 	LLVMTypeKind elem_kind = LLVMGetTypeKind(elem_type);
+
+	if (elem_kind == LLVMPointerTypeKind) {
+		ptr_type = LLVMPointerType(ctx->const_buffer_rsrc_type, ptr_as);
+	}
+
+	if (elem_kind == LLVMArrayTypeKind &&
+	    LLVMGetTypeKind(LLVMGetElementType(elem_type)) == LLVMPointerTypeKind) {
+		unsigned elem_count = LLVMGetArrayLength(elem_type);
+		LLVMTypeRef array_type =
+			LLVMArrayType(ctx->const_buffer_rsrc_type, elem_count);
+		ptr_type = LLVMPointerType(array_type, ptr_as);
+	}
+
+	base_ptr = LLVMBuildBitCast(gallivm->builder, base_ptr, ptr_type, "");
 	LLVMValueRef result = build_indexed_load(ctx, base_ptr, index, true);
 	LLVMSetMetadata(result, ctx->invariant_load_md_kind, ctx->empty_md);
 
 	/* Set !dereferenceable metadata */
-	if (elem_kind == LLVMPointerTypeKind ||
-		(elem_kind == LLVMArrayTypeKind && LLVMGetTypeKind(LLVMGetElementType(elem_type)) == LLVMPointerTypeKind)) {
+	if (LLVMGetTypeKind(LLVMTypeOf(result)) == LLVMPointerTypeKind) {
 		LLVMValueRef deref_bytes, deref_md;
 	 	deref_bytes = LLVMConstInt(ctx->i64, UINT64_MAX, 0);
 		deref_md = LLVMMDNodeInContext(LLVMGetTypeContext(ptr_type),
