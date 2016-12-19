@@ -355,25 +355,8 @@ static LLVMValueRef build_indexed_load_const(
 	struct si_shader_context *ctx,
 	LLVMValueRef base_ptr, LLVMValueRef index)
 {
-	struct gallivm_state *gallivm = ctx->soa.bld_base.base.gallivm;
 	LLVMTypeRef ptr_type = LLVMTypeOf(base_ptr);
-	unsigned ptr_as = LLVMGetPointerAddressSpace(ptr_type);
-	LLVMTypeRef elem_type = LLVMGetElementType(ptr_type);
-	LLVMTypeKind elem_kind = LLVMGetTypeKind(elem_type);
 
-	if (elem_kind == LLVMPointerTypeKind) {
-		ptr_type = LLVMPointerType(ctx->const_buffer_rsrc_type, ptr_as);
-	}
-
-	if (elem_kind == LLVMArrayTypeKind &&
-	    LLVMGetTypeKind(LLVMGetElementType(elem_type)) == LLVMPointerTypeKind) {
-		unsigned elem_count = LLVMGetArrayLength(elem_type);
-		LLVMTypeRef array_type =
-			LLVMArrayType(ctx->const_buffer_rsrc_type, elem_count);
-		ptr_type = LLVMPointerType(array_type, ptr_as);
-	}
-
-	base_ptr = LLVMBuildBitCast(gallivm->builder, base_ptr, ptr_type, "");
 	LLVMValueRef result = build_indexed_load(ctx, base_ptr, index, true);
 	LLVMSetMetadata(result, ctx->invariant_load_md_kind, ctx->empty_md);
 
@@ -386,6 +369,29 @@ static LLVMValueRef build_indexed_load_const(
 		LLVMSetMetadata(result, ctx->dereferenceable_md_kind, deref_md);
 	}
 	return result;
+}
+
+static LLVMValueRef build_indexed_load_const_w_type(
+	struct si_shader_context *ctx,
+	LLVMValueRef base_ptr, LLVMValueRef index,
+	LLVMTypeRef load_type)
+{
+	struct gallivm_state *gallivm = ctx->soa.bld_base.base.gallivm;
+	LLVMTypeRef ptr_type = LLVMTypeOf(base_ptr);
+	unsigned ptr_as = LLVMGetPointerAddressSpace(ptr_type);
+	LLVMTypeRef elem_type = LLVMGetElementType(ptr_type);
+	LLVMTypeKind elem_kind = LLVMGetTypeKind(elem_type);
+
+	if (elem_kind == LLVMArrayTypeKind) {
+		unsigned elem_count = LLVMGetArrayLength(elem_type);
+		LLVMTypeRef array_type =  LLVMArrayType(load_type, elem_count);
+		ptr_type = LLVMPointerType(array_type, ptr_as);
+	} else {
+		ptr_type = LLVMPointerType(load_type, ptr_as);
+	}
+
+	base_ptr = LLVMBuildBitCast(gallivm->builder, base_ptr, ptr_type, "");
+	return build_indexed_load_const(ctx, base_ptr, index);
 }
 
 static LLVMValueRef get_instance_index_for_fetch(
@@ -1699,7 +1705,9 @@ static LLVMValueRef load_sample_position(struct si_shader_context *radeon_bld, L
 	LLVMBuilderRef builder = gallivm->builder;
 	LLVMValueRef desc = LLVMGetParam(ctx->main_fn, SI_PARAM_RW_BUFFERS);
 	LLVMValueRef buf_index = lp_build_const_int32(gallivm, SI_PS_CONST_SAMPLE_POSITIONS);
-	LLVMValueRef resource = build_indexed_load_const(ctx, desc, buf_index);
+	LLVMValueRef resource =
+		build_indexed_load_const_w_type(ctx, desc, buf_index,
+						ctx->const_buffer_rsrc_type);
 
 	/* offset = sample_id * 8  (8 = 2 floats containing samplepos.xy) */
 	LLVMValueRef offset0 = lp_build_mul_imm(uint_bld, sample_id, 8);
@@ -1871,7 +1879,8 @@ static void declare_system_value(
 
 		slot = lp_build_const_int32(gallivm, SI_HS_CONST_DEFAULT_TESS_LEVELS);
 		buf = LLVMGetParam(ctx->main_fn, SI_PARAM_RW_BUFFERS);
-		buf = build_indexed_load_const(ctx, buf, slot);
+		buf = build_indexed_load_const_w_type(ctx, buf, slot,
+						      ctx->const_buffer_rsrc_type);
 		offset = decl->Semantic.Name == TGSI_SEMANTIC_DEFAULT_TESSINNER_SI ? 4 : 0;
 
 		for (i = 0; i < 4; i++)
@@ -2310,7 +2319,9 @@ static void si_llvm_emit_clipvertex(struct lp_build_tgsi_context *bld_base,
 	LLVMValueRef ptr = LLVMGetParam(ctx->main_fn, SI_PARAM_RW_BUFFERS);
 	LLVMValueRef constbuf_index = lp_build_const_int32(base->gallivm,
 							   SI_VS_CONST_CLIP_PLANES);
-	LLVMValueRef const_resource = build_indexed_load_const(ctx, ptr, constbuf_index);
+	LLVMValueRef const_resource =
+		build_indexed_load_const_w_type(ctx, ptr, constbuf_index,
+						ctx->const_buffer_rsrc_type);
 
 	for (reg_index = 0; reg_index < 2; reg_index ++) {
 		LLVMValueRef *args = pos[2 + reg_index];
@@ -6088,7 +6099,8 @@ static void si_llvm_emit_polygon_stipple(struct si_shader_context *ctx,
 
 	/* Load the buffer descriptor. */
 	slot = lp_build_const_int32(gallivm, SI_PS_CONST_POLY_STIPPLE);
-	desc = build_indexed_load_const(ctx, param_rw_buffers, slot);
+	desc = build_indexed_load_const_w_type(ctx, param_rw_buffers, slot,
+					       ctx->const_buffer_rsrc_type);
 
 	/* The stipple pattern is 32x32, each row has 32 bits. */
 	offset = LLVMBuildMul(builder, address[1],
