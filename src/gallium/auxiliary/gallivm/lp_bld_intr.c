@@ -144,6 +144,7 @@ static const char *attr_to_str(enum lp_func_attr attr)
 {
    switch (attr) {
    case LP_FUNC_ATTR_ALWAYSINLINE: return "alwaysinline";
+   case LP_FUNC_ATTR_ARGMEMONLY: return "argmemonly";
    case LP_FUNC_ATTR_BYVAL: return "byval";
    case LP_FUNC_ATTR_INREG: return "inreg";
    case LP_FUNC_ATTR_NOALIAS: return "noalias";

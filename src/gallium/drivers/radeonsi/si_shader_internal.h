@@ -127,6 +127,7 @@ struct si_shader_context {
 	unsigned range_md_kind;
 	unsigned uniform_md_kind;
 	unsigned fpmath_md_kind;
+	unsigned dereferenceable_md_kind;
 	LLVMValueRef fpmath_md_2p5_ulp;
 	LLVMValueRef empty_md;
 
@@ -150,8 +151,15 @@ struct si_shader_context {
 	LLVMTypeRef v4i32;
 	LLVMTypeRef v4f32;
 	LLVMTypeRef v8i32;
+	LLVMTypeRef const_buffer_rsrc_type;
 
 	LLVMValueRef shared_memory;
+};
+
+enum {
+	CONST_ADDR_SPACE = 2,
+	LOCAL_ADDR_SPACE = 3,
+	CONST_ADDR_SPACE_W_RSRC = 42,
 };
 
 static inline struct si_shader_context *

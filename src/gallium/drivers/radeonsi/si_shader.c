@@ -93,11 +93,6 @@ static void si_build_ps_epilog_function(struct si_shader_context *ctx,
  */
 #define VS_EPILOG_PRIMID_LOC 2
 
-enum {
-	CONST_ADDR_SPACE = 2,
-	LOCAL_ADDR_SPACE = 3,
-};
-
 #define SENDMSG_GS 2
 #define SENDMSG_GS_DONE 3
 
@@ -360,8 +355,21 @@ static LLVMValueRef build_indexed_load_const(
 	struct si_shader_context *ctx,
 	LLVMValueRef base_ptr, LLVMValueRef index)
 {
+	LLVMTypeRef ptr_type = LLVMTypeOf(base_ptr);
+	LLVMTypeRef elem_type = LLVMGetElementType(ptr_type);
+	LLVMTypeKind elem_kind = LLVMGetTypeKind(elem_type);
 	LLVMValueRef result = build_indexed_load(ctx, base_ptr, index, true);
 	LLVMSetMetadata(result, ctx->invariant_load_md_kind, ctx->empty_md);
+
+	/* Set !dereferenceable metadata */
+	if (elem_kind == LLVMPointerTypeKind ||
+		(elem_kind == LLVMArrayTypeKind && LLVMGetTypeKind(LLVMGetElementType(elem_type)) == LLVMPointerTypeKind)) {
+		LLVMValueRef deref_bytes, deref_md;
+	 	deref_bytes = LLVMConstInt(ctx->i64, UINT64_MAX, 0);
+		deref_md = LLVMMDNodeInContext(LLVMGetTypeContext(ptr_type),
+						&deref_bytes, 1);
+		LLVMSetMetadata(result, ctx->dereferenceable_md_kind, deref_md);
+	}
 	return result;
 }
 
@@ -1571,16 +1579,34 @@ static LLVMValueRef get_thread_id(struct si_shader_context *ctx)
 
 /**
  * Load a dword from a constant buffer.
+ * @param offset This is a byte offset.
+ * @returns An LLVMValueRef with f32 type.
  */
 static LLVMValueRef buffer_load_const(struct si_shader_context *ctx,
 				      LLVMValueRef resource,
 				      LLVMValueRef offset)
 {
 	LLVMBuilderRef builder = ctx->gallivm.builder;
-	LLVMValueRef args[2] = {resource, offset};
+	LLVMValueRef load;
+	LLVMValueRef args[3] = {resource, offset, LLVMConstInt(ctx->i1, 0, 0) };
+	LLVMTypeRef resource_type = LLVMTypeOf(resource);
+	LLVMTypeKind resource_kind = LLVMGetTypeKind(resource_type);
 
-	return lp_build_intrinsic(builder, "llvm.SI.load.const", ctx->f32, args, 2,
-			       LP_FUNC_ATTR_READNONE);
+	/* XXX: We can have a non-pointer resource if we do a constant load
+         * from the RW_BUFFERS whicha are still represented using the <16 x i8>
+         * type. We can eliminate this once we start using pointer types for
+	 * those buffers.
+	 */
+	if (resource_kind != LLVMPointerTypeKind) {
+		return lp_build_intrinsic(builder, "llvm.SI.load.const",
+					  ctx->f32, args, 2,
+					  LP_FUNC_ATTR_READNONE);
+	}
+
+	load = lp_build_intrinsic(builder, "llvm.amdgcn.s.buffer.load.i32",
+				  ctx->i32, args, 3,
+				  LP_FUNC_ATTR_READONLY | LP_FUNC_ATTR_ARGMEMONLY);
+	return LLVMBuildBitCast(builder, load, ctx->f32, "");
 }
 
 static LLVMValueRef load_sample_position(struct si_shader_context *radeon_bld, LLVMValueRef sample_id)
@@ -5504,9 +5530,10 @@ static void create_meta_data(struct si_shader_context *ctx)
 							       "invariant.load", 14);
 	ctx->range_md_kind = LLVMGetMDKindIDInContext(gallivm->context,
 						     "range", 5);
+	ctx->dereferenceable_md_kind = LLVMGetMDKindIDInContext(
+		gallivm->context, "dereferenceable", 15);
 	ctx->uniform_md_kind = LLVMGetMDKindIDInContext(gallivm->context,
 							"amdgpu.uniform", 14);
-
 	ctx->empty_md = LLVMMDNodeInContext(gallivm->context, NULL, 0);
 }
 
@@ -5601,7 +5628,7 @@ static void create_function(struct si_shader_context *ctx)
 	v3i32 = LLVMVectorType(ctx->i32, 3);
 
 	params[SI_PARAM_RW_BUFFERS] = const_array(ctx->v16i8, SI_NUM_RW_BUFFERS);
-	params[SI_PARAM_CONST_BUFFERS] = const_array(ctx->v16i8, SI_NUM_CONST_BUFFERS);
+	params[SI_PARAM_CONST_BUFFERS] = const_array(ctx->const_buffer_rsrc_type, SI_NUM_CONST_BUFFERS);
 	params[SI_PARAM_SAMPLERS] = const_array(ctx->v8i32, SI_NUM_SAMPLERS);
 	params[SI_PARAM_IMAGES] = const_array(ctx->v8i32, SI_NUM_IMAGES);
 	params[SI_PARAM_SHADER_BUFFERS] = const_array(ctx->v4i32, SI_NUM_SHADER_BUFFERS);
@@ -7722,6 +7749,7 @@ si_get_shader_part(struct si_screen *sscreen,
 	struct gallivm_state *gallivm = &ctx.gallivm;
 
 	si_init_shader_ctx(&ctx, sscreen, &shader, tm);
+	create_meta_data(&ctx);
 	ctx.type = type;
 
 	switch (type) {
