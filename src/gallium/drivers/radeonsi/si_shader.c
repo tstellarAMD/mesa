@@ -355,8 +355,8 @@ static LLVMValueRef build_indexed_load_const(
 	struct si_shader_context *ctx,
 	LLVMValueRef base_ptr, LLVMValueRef index)
 {
+	struct gallivm_state *gallivm = ctx->soa.bld_base.base.gallivm;
 	LLVMTypeRef ptr_type = LLVMTypeOf(base_ptr);
-
 	LLVMValueRef result = build_indexed_load(ctx, base_ptr, index, true);
 	LLVMSetMetadata(result, ctx->invariant_load_md_kind, ctx->empty_md);
 
